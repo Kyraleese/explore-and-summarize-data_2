@@ -1,0 +1,1060 @@
+Investigating Donations to the 2012 Presidential Campaign by Michigan Residents -- Erin Kiser
+========================================================
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, packages}
+# Load all of the packages that you end up using
+# in your analysis in this code chunk.
+
+# Notice that the parameter "echo" was set to FALSE for this code chunk.
+# This prevents the code from displaying in the knitted HTML output.
+# You should set echo=FALSE for all code chunks in your file.
+
+library(ggplot2)
+library(gridExtra)
+library(maps)
+library(mapdata)
+library(dplyr)
+library(tidyr)
+library(scales)
+#library(modeest)
+library(reshape)
+
+```
+
+```{r echo=FALSE, Load_the_Data}
+# Load the Data
+setwd("C:/Users/Kyraleese/Documents/Project3")
+donations <- read.csv('P2012-MI.csv')
+counties <- read.csv('Michigan-Counties.csv',sep=',',row.names=NULL)
+data(county.fips)
+
+#Match zip codes to counties for later evaluation
+donations$county <- tolower(
+  counties$County[match(substr(donations$contbr_zip,0,5), counties$Zip)]
+)
+
+#copy over the fips data from couny.fips for convenience
+donations$fips <- county.fips$fips[
+  match(
+    paste("michigan",donations$county,sep=","), 
+    county.fips$polyname
+  )
+]
+```
+
+```{r echo=FALSE, Title}
+#Nothing special here, just think it looks nice at the beginning of the article.
+map('county', 'michigan',fill=TRUE, col="gray90")
+box()
+
+```
+
+#Cleaning the data
+
+One of the things I decided to do was to do map graphs.  Campaign data, being tied as it is to elections, seemed a good candidate for these kinds of graphs.  The problem is that the graphing library for maps has a county mapping that maps "state, county" to a code.  I had to somehow get that information in to my data set.
+
+The first thing I did was look for a data set of zip codes.  The first attempt used data I obtained from the following location: http://www.brainyzip.com/state/zip_michigan.html
+
+Unfortunately, it left out some obvious Michigan zip codes, so I moved on.  I found another source that upon inspection appeared to be more inclusive at http://www.zipcodestogo.com/Michigan/.
+
+For both of them, once I'd finished the data load, I took a look at the zip codes that I didn't have county mappings for.
+
+```{r Zip Codes}
+#Get the unique zip codes that we couldn't look up
+unique(substr(subset(donations,is.na(county))$contbr_zip,0,5))
+```
+
+A couple of these look like they are just a case of missing data, like perhaps 48018.  Some of them are clearly not in Michigan. So, let's take a look at the full data for the missing values:
+
+```{r Bad Zip Codes}
+#Get the number of unique zip codes that we couldn't look up
+nrow(subset(donations,is.na(county)))
+
+```
+
+317 rows.  When I atually look at the data, it looks like the 48018 is likely a data mis-entry as that entry lists Ann Arbor as the city, and one of the zip codes in Ann Arbor is 48108 (which is what this zip code was likely supposed to be).  That said, tossing away 317 entries of 148,343 isn't horrible, so I called it good enough and moved on.
+
+## General overview
+
+# Univariate Plots Section
+All right, let's start taking a look at the donations of the good data, shall we?
+```{r echo=FALSE, fig.width=10,  Univariate_Plots-1}
+# clean up our donations by removing donations associated with counties we can't map.
+clean_donations = subset(donations, !is.na(fips))
+
+# Fix date to be seen as an actual date by R
+clean_donations$contb_receipt_dt <- as.Date(
+  clean_donations$contb_receipt_dt, "%d-%b-%y"
+)
+
+ggplot(clean_donations, aes(contb_receipt_amt)) +
+  geom_histogram(binwidth = 25, drop = TRUE) +
+  scale_y_log10() +
+  ggtitle("All Donations - $25 Buckets")
+```
+
+The first thing I wanted to do was get a general idea of the donations counts.  I kept the bucket size down to $25 because when I skimmed through the data I noticed that most of the data was in the low to mid $100s.  Unfortunately, it seems that $25 is a little too small of a bucket as it ends up being very jagged and noisy.  Still, it paints a pretty good picture of the distributions of donations.
+
+However if you look closely you'll notice some of the buckets are for negative amounts, which threw me.  Why would their be negative donations in this data set?  It's supposed to be data on the amount of a donation FROM a given individual TO a candidate.
+
+Thankfully this dataset isn't so large that I couldn't filter it in excel to see just the negative donations.  When I do this filtering, many of the lines show "REATTRIBUTION TO SPOUSE", "refund" and "REDESIGNATION TO GENERAL".  After some digging, it looks like these are often used when someone donates more than the maximum; I will admit I don't completely understand it.  I did come across a github repo where an individual had done a country wide analysis of the 2008 election data here: https://github.com/tejalb/Obama_McCain_2008.  They also had observed negative values in the data set and did some digging on the various notations about the amounts.  
+
+Now that we've got a general idea of the shape of the data (roughly normal when we allow negative values) let's look at the mean, median, quartiles and sums of all donations:
+```{r echo=FALSE, Univariate_mmq_all}
+summary(clean_donations$contb_receipt_amt)
+sum(clean_donations$contb_receipt_amt)
+```
+
+The minimum donation is, of course a negative number, -$5,000.  The maximum donation is $10,000.  The first and third quartiles are $25.00 and $112.00, with the median of $50.00 falling closer to the 1st quartile than the 3rd and the mean being a bit over the 3rd quartile at $190.10.
+
+But, pictures can convey things much more elegantly than words, so let's take a look at a box plot of this data, shall we?
+
+```{r echo=FALSE, fig.width=10, Univariate_box_all_candidates_first_look}
+ggplot(clean_donations, aes(cand_nm, contb_receipt_amt)) +
+  geom_boxplot(outlier.colour= alpha("black", .25)) +
+  coord_flip() + 
+  ggtitle("2012 Campaign Donations By Candidate") +
+  ylab("Donation Amount") +
+  xlab("Candidate")
+```
+
+It's hard to see much, especially for the two main candidates of the 2012 race, Obama and Romney.  It looks like most of the candidate's interquartile ranges are fairly narrow.  Some candidates have a lot of outliers, so we set the alpha for those to 25%.  Even then, we can see that there's quite a lot of overplotting going on.  If we lessen the alpha furhter, however, we risk some of the otliers being too difficult to see.  
+
+Let's adjust the scales of the plots and see if we can't get a better view of the candidate box plots.
+
+
+```{r echo=FALSE, fig.width=10, Univariate_box_all_candidate}
+ggplot(clean_donations, aes(cand_nm, contb_receipt_amt)) +
+  geom_boxplot(outlier.colour= alpha("black", .25)) +
+  coord_flip() + 
+  scale_y_continuous(trans = 'log10',
+                     breaks = trans_breaks('log10', function(x) 10^x),
+                     labels = trans_format('log10', math_format(10^.x))) + 
+  ggtitle("2012 Campaign Donations By Candidate") +
+  ylab("Donation Amount (log10)") +
+  xlab("Candidate")
+```
+
+We can see that medians, first and third quartiles for donations is all over the place, though many of the candidates have a first quartile that is a little less than 10^2 ($100).  Let's take a look at the same information, only now according to county (warning, fairly large visual ahead as there are 81 counties in this dataset):
+
+```{r echo=FALSE, fig.width=10, fig.height=12, Univariate_box_all_county}
+
+ggplot(clean_donations, aes(county, contb_receipt_amt)) +
+  geom_boxplot(outlier.colour= alpha("black", .25)) +
+  coord_flip() + 
+  scale_y_continuous(trans = 'log10', 
+                     breaks = trans_breaks('log10', function(x) 10^x),
+                     labels = trans_format('log10', math_format(10^.x))) + 
+  ggtitle("2012 Campaign Donations By County") +
+  ylab("Donation Amount") +
+  xlab("County")
+
+```
+
+This graph is rather busy due to the fact that we have so many counties.  Still, we can see that many of the counties are practically identical so far as their summary data is concerned (interquartile range, median).
+
+The only problem with using log10 for our y scale (we flipped coordinates to show them stacked vertically), is that we end up losing all the negative values.  That said, we're really mostly interested with the spread between the 1st and 3rd quartiles and where the average is compared to that, so losing the negatives seems like an acceptable trade off.
+
+```{r echo=FALSE, dataframes}
+#Donations to only Obama
+oba_donations = filter(clean_donations, cand_id == "P80003338")
+#Donations to only Romney
+rom_donations = filter(clean_donations, cand_id == "P80003353")
+#Combine the two for later line graphs so we can use cand_nm / id for color
+presidential_donations = rbind(oba_donations, rom_donations)
+```
+
+As interesting as all the data is, however, I'm mostly interested in the differences between the two main candidates -- Obama and Romney. It'll clean up the boxplots by candidate, though the boxplots by county will still be rather busy.  First, though, let's take a look at the histograms of donation amount, and see how that compares to the histogram for all data.  We'll make the buckets a bit larger thist time.
+
+```{r echo=FALSE, Univariate_Plots-2}
+ggplot(clean_donations, aes(contb_receipt_amt)) +
+  geom_histogram(binwidth = 100, drop = TRUE) +
+  scale_y_continuous(trans = 'log10', 
+                     breaks = trans_breaks('log10', function(x) 10^x), 
+                     labels = trans_format('log10', math_format(10^.x))) + 
+  ggtitle("All - $100 Buckets") +
+  xlab("Donation Size in Dollars")
+
+ggplot(oba_donations, aes(contb_receipt_amt)) +
+  geom_histogram(binwidth = 100, drop = TRUE) +
+  scale_y_continuous(trans = 'log10', 
+                     breaks = trans_breaks('log10', function(x) 10^x), 
+                     labels = trans_format('log10', math_format(10^.x))) +
+  ggtitle("Obama - $100 Buckets")  +
+  xlab("Donation Size in Dollars")
+
+ggplot(rom_donations, aes(contb_receipt_amt)) +
+  geom_histogram(binwidth = 100, drop = TRUE) +
+  scale_y_continuous(trans = 'log10', 
+                     breaks = trans_breaks('log10', function(x) 10^x), 
+                     labels = trans_format('log10', math_format(10^.x))) + 
+  ggtitle("Romney - $100 Buckets")  +
+  xlab("Donation Size in Dollars")
+```
+
+Interesting.  At first glance it looks like the peaks of the histogram are all different.  If we look closer however, we'll notice that Obama's histogram doesn't match the scale of the other two - the minimum is -2500 and the maximum is 5000 whereas for the others it's -5000 and 10000.  The heights also aren't all the same, so we'll want to fix those as well.
+
+```{r echo=FALSE, Univariate_Plots-3}
+ggplot(clean_donations, aes(contb_receipt_amt)) +
+  geom_histogram(binwidth = 100, drop = TRUE) +
+  scale_y_continuous(trans = 'log10', 
+                     breaks = trans_breaks('log10', function(x) 10^x), 
+                     labels = trans_format('log10', math_format(10^.x)),                     
+                     limits = c(1,100000)) +
+  scale_x_continuous(limits=c(-5000, 10100)) + 
+  ggtitle("All Donations - $100 Buckets")  +
+  xlab("Donation Size in Dollars")
+
+ggplot(oba_donations, aes(contb_receipt_amt)) +
+  geom_histogram(binwidth = 100, drop = TRUE) +
+  scale_y_continuous(trans = 'log10',
+                     breaks = trans_breaks('log10', function(x) 10^x),
+                     labels = trans_format('log10', math_format(10^.x)),
+                     limits = c(1,100000)) +
+  scale_x_continuous(limits=c(-5001, 10100)) + 
+  ggtitle("Donations to Obama - $100 Buckets")  +
+  xlab("Donation Size in Dollars")
+
+ggplot(rom_donations, aes(contb_receipt_amt)) +
+  geom_histogram(binwidth = 100, drop = TRUE) +
+  scale_y_continuous(trans = 'log10',
+                     breaks = trans_breaks('log10', function(x) 10^x),
+                     labels = trans_format('log10', math_format(10^.x)),
+                     limits = c(1,100000)) +
+  scale_x_continuous(limits=c(-5001, 10100)) + 
+  ggtitle("Donations to Romney - $100 Buckets")  +
+  xlab("Donation Size in Dollars")
+
+```
+
+That's better.  Since my bucket size is 100, I actually had to scale the x-axis from -5000 to 10100.  I set the maximum for y to 100,000.  Now that we've gotten the scaling to match on all the graphs we can see that there's quite a difference between the donations to Obama and the donations to Romney.  
+
+For example, Obama's most popular donation amount was between $0 and $100 - fairly close to 100,000 of them.  Romney's most popular donation amount was also between $0 and $100, but he only just topped 10,000 donations in that range. We can confirm this by taking a quick look at the summary of the datasets for Obama and Romney. 
+
+```{r Univariate_mmq_o}
+summary(oba_donations$contb_receipt_amt)
+sum(oba_donations$contb_receipt_amt)
+```
+
+
+```{r Univariate_mmq_r}
+summary(rom_donations$contb_receipt_amt)
+sum(rom_donations$contb_receipt_amt)
+```
+
+Despite all that, however, Romney still raised more money than Obama - about $7 million more to be exact.
+
+# Univariate Analysis
+### What is the structure of your dataset?
+After all of that, what can we tell about our data so far?
+
+Well, first we need to look at what the various column names mean, as the shortened descriptions aren't completely clear.  We can do so here: ftp://ftp.fec.gov/FEC/Presidential_Map/2012/DATA_DICTIONARIES/CONTRIBUTOR_FORMAT.txt
+
+For simplicity's sake, I've copied over the column headers and their descriptions:
+
+The text file is comma delimited and uses double-quotation marks as the text qualifier.
+
+--------------------------------------------------------------- 
+
+CMTE_ID  		COMMITTEE ID				S<br>
+CAND_ID			CANDIDATE ID				S<br>
+CAND_NM			CANDIDATE NAME				S<br>
+CONTBR_NM		CONTRIBUTOR NAME			S<br>
+CONTBR_CITY		CONTRIBUTOR CITY			S<br>
+CONTBR_ST		CONTRIBUTOR STATE			S<br>
+CONTBR_ZIP		CONTRIBUTOR ZIP CODE			S<br>
+CONTBR_EMPLOYER		CONTRIBUTOR EMPLOYER			S<br>
+CONTBR_OCCUPATION	CONTRIBUTOR OCCUPATION			S<br>
+CONTB_RECEIPT_AMT	CONTRIBUTION RECEIPT AMOUNT		N<br>
+CONTB_RECEIPT_DT	CONTRIBUTION RECEIPT DATE		D	<br>
+RECEIPT_DESC		RECEIPT DESCRIPTION			S<br>
+MEMO_CD			MEMO CODE				S<br>
+MEMO_TEXT		MEMO TEXT				S<br>
+FORM_TP			FORM TYPE				S<br>
+FILE_NUM		FILE NUMBER				N<br>
+TRAN_ID			TRANSACTION ID				S<br>
+ELECTION_TP		ELECTION TYPE/PRIMARY GENERAL INDICATOR S<br>
+<br>
+Data Type:  S = string (alpha or alpha-numeric); D = date; N = numeric <br> 
+-------------------------------------------------------
+
+For the Form Type field, they use the following:
+
+FORM TYPE
+Sting
+
+Indicates what schedule and line number the reporting committee reported a specific transaction. Without knowing more about Form 3p Schedule A / B, it's hard to do much with this variable.
+
+SA17A:  Form 3P Schedule A Line 17A<br>
+SA18:   Form 3P Schedule A Line 18<br>
+SB28A:  Form 3P Schedule B Line 28A <br> 
+
+---------
+
+For the Election Type field, they use the following:
+---------
+ELECTION TYPE / PRIMARY-GENERAL INDICATOR
+String 
+
+This code indicates the election for which the contribution was made. EYYYY (election plus election year)<br>
+P = Primary<br>
+G = General<br>
+O = Other<br>
+C = Convention<br>
+R = Runoff<br>
+S = Special<br>
+E = Recount<br>
+
+At first glance we can see that most of this data is categorical in nature and somewhat redundant.  For example, there is the candidate name and the candidate id.  These are redundant, as the candidate name of "Obama, Barrack" and Candidate Id "P80003338" both indicate the same person.
+
+As for the address, there are three (four if you count name) that are, for our purposes, redundant: city, state and zip.  Since I specifically chose the Michigan dataset for this, all the state entries should have Michigan in them.  City might be useful if we wanted to highligh donations by cities, but states are grouped into counties and there are multiple cities in a county.  For this, the zip code will suffice (along with the extra data I obtained that mapped zip codes to counties).  The name of the donor for our purposes isn't really useful either, since we lack any other data about the donor as a person.  
+
+Then there are the values that seem to be more aimed at book keeping -- things like "File_Num", "Form_TP", "Memo_Text", "Memo_CD", "Transaction_ID", "Receipt_Desc".  Election Type *might* be interesting and we'll take a quick glance at that later to see if there are any interesting patterns.
+
+### What is/are the main feature(s) of interest in your dataset?
+This leaves us with the following fields that I think might be of the most interest for analysis:
+Candidate (cand_nm, cand_id)
+Donation Amount (CONTB_RECEIPT_AMT)
+Donation Time (CONTB_RECEIPT_DT)
+Donor Location (CONTBR_ZIP)
+Election Type (ELECTION_TP)
+
+Employer and Occupation might be interesting.  The problem with this is that these are self identified so we run into problems like variations of spelling, spelling errors, variations of titles.  We'll try and take a quick look at the information, but I suspect that it's going to involve a lot of data munging.  I'd expect however that in terms of dollar amount spent, those who tend to make more in their profession will donate more than those who donate less. It might be intersting to compare differences - say, did more Lawyers donate to Obama than Romney.    
+
+What I'm really more interested in, however, is the overall money collected, how it breaks down by county and it's descriptors: mean, median, quartiles, etc.  
+
+One thing that threw me about the data so far is that the contribution amount listed can be negative or pos.  Negative values seem to be refunds, redisgnations, reattributions and payments.  With a little research, I've discovered that redesignations generally occur when someone donates more than $2,500 and "reattributes" the amount above $2,500 to someone else.  Often times this someone else is a spouse.  Redesignations also occurr when someone pays more than $2,500.  Since there are multiple races - the primaries and then the general election -- a person can overdonate and have their overdonation "roll" to the general election from the primary.
+
+### What other features in the dataset do you think will help support your investigation into your feature(s) of interest?
+There doesn't appear to be any other features that will be terribly helpful.  As I have said, I don't really care about the name of the donor.  If I had more data or more identifying information on the donor, like say age, salary and party affiliation, I might.  As for determining location, I'm going to count on the zip code to determine that.  Since I'm not given much data on the donors that isn't repetitive / more ledger style information there's nothing really to use to augment / support my features of interest as far as candidate, donor location and donor amount are concerned.
+
+### Did you create any new variables from existing variables in the dataset?
+In preparation for some of the map graphs I would like to explore, I did create a couple of variables.  The first I created was county.  To do this I looked up a listing of Michigan counties by zip codes.  This was so that I could look up the fips id for map graphs.  The fips column I created coincides with the fips column from the county.fips dataset.  Using the county.fips data set, and the counties I'd matched, I was able to look up the id of the polygon for the county that zip code was in. 
+
+### Of the features you investigated, were there any unusual distributions? Did you perform any operations on the data to tidy, adjust, or change the form of the data? If so, why did you do this?
+In general, the distributions are somewhat normal.  We do see a bit less normalness as the size of the contribution grows, though it seems somewhat less pronounced for donations to Obama than to Romney.  It'd be interesting to zoom in on the data between the 1st and 3rd quartiles - the ranges are very different, especially when you compare them to the means.
+
+# Bivariate Plots Section
+Given the data that we have, it seems that one of the most obvious plots would be donation vs date.  Let's take a first stab at looking at donations over time.
+
+```{r echo=FALSE, fig.width=10, Bivariate_Plots-Date}
+presidential_donations.total <- presidential_donations %>%
+  group_by(contb_receipt_dt, cand_nm) %>%
+  summarize(mean_donation = mean(contb_receipt_amt),
+            median_donation = median(contb_receipt_amt),
+            total_donation = sum(contb_receipt_amt),
+            n=n()) %>%
+  ungroup() %>%
+  arrange(contb_receipt_dt)
+
+ggplot(aes(x=contb_receipt_dt,y=mean_donation), 
+       data=presidential_donations.total) +
+  geom_line(aes(color=cand_nm)) +
+  ggtitle("Mean Donation by Day")
+```
+
+A bit noisy.  Perhaps if we rolled things up by month it might smooth things out a bit.  First we'll create a month_year variable that will be sest to the first of each month and year.  So, for example, January 15, 2012 will become January 01, 2012 for the purposes of this graph.
+
+
+```{r echo=FALSE, fig.width=10, Bivariate_Plots-DateMonth}
+# Map all dates to the first day of the month so that we can use this to rollup by month.
+presidential_donations$month_year <- as.Date(
+  format(presidential_donations$contb_receipt_dt,"1-%b-%y"),"%d-%b-%y"
+)
+
+presidential_donations.total2 <- presidential_donations %>%
+  group_by(month_year, cand_nm) %>%
+  summarize(mean_donation = mean(contb_receipt_amt),
+            median_donation = median(contb_receipt_amt),
+            total_donation = sum(contb_receipt_amt),
+            n=n()) %>%
+  ungroup() %>%
+  arrange(month_year)
+
+ggplot(aes(x=month_year,y=mean_donation),
+       data=presidential_donations.total2) +
+  geom_line(aes(color=cand_nm)) +
+  geom_point(aes(color=cand_nm)) +
+  ggtitle("Mean Donation by Month") +
+  ylab("Mean Donation") +
+  xlab("Month")
+
+```
+This is a lot less busy, and shows general trends much more clearly.
+
+For example, we can see that on average, donations to Obama were between roughly $125 and $150 except for a brief spike above $500 in May.  Donations to Romney varied a bit more, though they only dipped below $500 a small handful of times before the campaign season wound down.
+
+This rolls up all contributions, however - primary, general, and any other.  The picture might look a bit different if we separated out the amount raised by race type.  First, we'll group by our month_year, then election_tp, then candidate.  Once we do that, we'll create another variable to use for our colors - race_type_candidate, which will be a concatenation of Candidate name and election_tp.
+
+
+```{r echo=FALSE, fig.width=10, Bivariate_Plots-DateMonth-ByRaceAndCand}
+presidential_donations.total3 <- presidential_donations %>%
+  group_by(month_year, election_tp, cand_nm) %>%
+  summarize(mean_donation = mean(contb_receipt_amt),
+            median_donation = median(contb_receipt_amt),
+            total_donation = sum(contb_receipt_amt),
+            n=n()) %>%
+  ungroup() %>%
+  ungroup() %>%
+  arrange(month_year)
+
+presidential_donations.total3$race_type_candidate = paste(
+  presidential_donations.total3$election_tp,
+  presidential_donations.total3$cand_nm, 
+  sep="-")
+
+ggplot(
+  aes(
+    x=month_year,y=mean_donation, 
+    colour=race_type_candidate
+  ),
+  data=presidential_donations.total3) +
+  geom_line() +
+  geom_point() +
+  ggtitle("Mean Donation by Month By Election Type and Candidate") +
+  ylab("Mean Donation") +
+  xlab("Month")
+
+clean_donations = subset(donations, !is.na(fips))
+```
+Remember that the race type is denoted with a letter as follows (listing edited to only reflect those we have):
+
+P = Primary
+G = General
+O = Other
+
+Interestingly enough, we see that Obama had some negative donations(payments most likely) associated with the 2008 Primary election, which seems kind of strange.  We can see that he made payments only four times during the election: an average around $1,250 for the month of June 2011, $250ish for May 2012, $2,500 for July 2012 and $250 again December 2012.  There's also a small amount of "Other" in what looks like November and December of 2012.  Let's see if we can't somehow delete those for the mean time to see how much each candidate raised for the general and primary elections.
+
+```{r echo=FALSE, fig.width=10, Bivariate_Plots-DateMonth-ByRaceAndCand-Filtered}
+pres_donations_by_election = subset(
+  presidential_donations.total3, 
+  election_tp %in% c('P2012','G2012'))
+  
+ggplot(
+  aes(
+    x=month_year,y=mean_donation, 
+    colour=race_type_candidate
+  ),
+  data=pres_donations_by_election) +
+  geom_line() +
+  geom_point() +
+  ggtitle("Mean Donation by Month By Election Type and Candidate") +
+  ylab("Mean Donation") +
+  xlab("Month")
+
+```
+That's better, now we just have information for the primary and general elections.
+
+I wouldn't have thought that Obama would have been fundraising during the primaries but it turns out I was wrong.  I'm sure I probably learned in my Social Studies class some long time ago that the President still had to technically run for the primaries, just that usually he'd be unchallenged for the most part. 
+
+That said, we can see on average in any given month, Obama only raised a couple hundred dollars for the primary campaign.  This was most likely due to the fact that he was running unopposed in the majority of the states for the Democratic Primaries (http://en.wikipedia.org/wiki/Democratic_Party_presidential_primaries,_2012)
+
+We can see that instead of focusing on the primary election, Obama spent most of his fundraising on the general election.  This makes sense as it was practically a given that Obama would be the Democratic candidate as he was running for another term in 2012.  Romney on the other hand, didn't really start raising for the primary election until April.  Perhaps by this time he likely thought that he was pretty much assured winning the Republican Primaries.
+
+We also notice a similar trend between both candidates: A sharp uptake in average donation amount followed by a drop off to a much smaller amount on average each month.  Keep in mind this is not the total amount donated but merely the average.
+
+Let's take a look at the total donations by month:
+
+```{r echo=FALSE, fig.width=10, Bivariate_Plots-DateMonth-ByRaceAndCand-FilteredTotals}
+ggplot(
+  aes(
+    x=month_year,y=total_donation, 
+    colour=race_type_candidate
+  ),
+  data=pres_donations_by_election) +
+  geom_line() +
+  geom_point() +
+  ggtitle("Total Donation by Month By Election Type and Candidate") +
+  ylab("Total Donation") +
+  xlab("Month")
+```
+Here we can see that, while initial donation amounts (as indicated in the prior graph) were on average rather high, the trend for total amount is much different than that for the average amount of donations.
+
+For Obama, his donations remained fairly steady for the General election until August 2012 - October 2012 where the totals jumped quite a bit compared to prior months.  During that same period however, the average donation amount was fairly low: ranging from just shy of $500 in August to somewhere around $25 in October.  
+
+For Romney, we can see that his trend for the same time period in terms of total raised was similiar to Obama's - only much more significant.  Romney raised just north of $4,500,000 in October compared to Obama's almost $2,000,000.  Just like Obama, Romney's average donations during this time frame was around $250 - $300 each month.  More than Obama's average except for in August but significantly less than his averages that were around $2,000 - $2,500 just a couple months earlier in April, May and July.
+# Bivariate Analysis
+
+### Talk about some of the relationships you observed in this part of the investigation. How did the feature(s) of interest vary with other features in the dataset?
+We can see that donations per day vary quite a bit.  When we roll them up to by month, however, we start to see some interesting trends, especially when we break the donations out by the tye election type they were for.
+
+With respect to the general elections, we can see that Obama pretty much raised money for the general election during the entire time that was recorded in this dataset.  As the current predident running for re-election it's not surprising that he'd spend most of his efforts towards the race he might actually lose - the general one.  While techincally he could have lost the primary election, it's generally accepted that the current president will be that party's nominee if they are going for re-election.  Doing research on the elections we found out that indeed, Obama was pretty much unopposed for the primary election.
+
+Where the real interesting data starts to show is in April of 2012 leading up to the general election.  We can see in April that Romney began collectiong donations for the general election then.  From April to July, we can see that Romney beats Obama in terms of total donations per month and average donation amount per month.  This trend continues through October.  From July through October both candidates have sharp upticks in total donations per month.  Once again in terms of donations received, Romney beats Obama in both terms of average donation amount and total donation amount each month.  The only exception is in July, when Obama's average donation amount is higher.
+
+This suggests that in general, Romney got more people to donate to him and at a higher average amount than Obama did.
+ 
+
+### Did you observe any interesting relationships between the other features (not the main feature(s) of interest)?
+Not really, as the other features were more ledger style features.  
+
+### What was the strongest relationship you found?
+The strongest relationship had to do with the candidate and the election type.  In general, less was raised for the primary election than for the general election.  This was particulary true for Obama, who was the current president at the time.  He pretty much didn't have to worry about the primaries and he focused on the general election.  While he may have raised more each month for the primary than the general election, his average donation amount was much higher for the general election than the primary.
+
+We can also see that as far as average donation amount went, both candidates had higher averages for their general election fundraising in the first few months they sought donations.  The difference was that Romney didn't receive donations for the general election until April, since he had to focus on winning the Primary election first.
+
+Lastly, in general, both candidates had a significant increase in total amount raised in the last few months before the generale lection compared to all other fundraising they did.  This makes sense as you want to make sure that you're on people's minds right before the election, which means more travelling, more ads, more everything that needs money.
+
+
+# Multivariate Plots Section
+For the multivariate plots, I want to focus on map graphs.  These sorts of graphs are used frequently when communicating election data (votes / etc), so it seems like a natural choice.
+
+To get started, we'll make use of R's cut to break donations into $0, $10, $25, $50, $100, $500 and $1000 minimums.  (So $0-$9, $10-$24, etc).  The highest amount for each county will be used to determine the color we use for that county, which will range from pale, almost white green to dark green.  Lighter colors indicate that the highest donation in that county were low, and darker colors will indicate that the highest donation in that county was high.
+
+
+```{r echo=FALSE, Bivariate_Plots-All_By_County}
+colors = c("#FFFFFF","#E5FFCC","#CCFF99","#B2FF66",
+           "#99FF33","#66CC00","#4C9900","#336600","#193300")
+
+# Let's look at money brought in, not money leaving
+pos_clean_donations <- clean_donations[clean_donations$contb_receipt_amt >= 0,]
+pos_clean_donations$colorBuckets <- as.numeric(
+  cut(
+    pos_clean_donations$contb_receipt_amt, 
+    c(-10.0, 0.0, 10.0, 25.0, 50.0, 100.0, 500.0, 1000.0, 10000.0)
+  )
+)
+
+# Legend text
+map_leg.txt <- c("-$10 to $0", "$0 to $10", "$10-$25", "$25-$50", 
+             "$50-$100", "$100-$500","$500-$1,000","$1,000-$10,000")
+
+
+clean_donations_max_buckets <- pos_clean_donations %>%
+  group_by(county) %>%
+  summarize(colorBucket = max(colorBuckets),
+            n = n()) %>%
+  arrange(county)
+
+clean_donations_max_buckets$fips <- county.fips$fips[match(
+  paste("michigan",clean_donations_max_buckets$county,sep=","),
+  county.fips$polyname
+)]
+
+
+colorsmatched <- clean_donations_max_buckets$colorBucket
+
+#color the counties
+map("county", 
+    "michigan", 
+    col = colors[colorsmatched], 
+    fill = TRUE, 
+    resolution = 0, 
+    lty = 0, 
+    projection = "polyconic"
+)
+
+#overlay the county outlines
+map("county", 
+    "michigan", 
+    col = "black", 
+    fill = FALSE, 
+    add = TRUE, 
+    lty = 1, 
+    lwd = 0.2, 
+    projection="polyconic"
+)
+
+title("Overall Max Donation Per County")
+legend("topright", map_leg.txt, horiz = FALSE, fill = colors)
+
+box()
+
+
+```
+We can see that in general, the max donation from any given county for a candidate was greater than $1,000 but was as little as around $100.  Since this map contains data for all candidates, including those who did not win the primaries for their party, let's take a look at the mapping for Obama:
+
+
+```{r echo=FALSE, Bivariate_Plots-Obama}
+oba_pos_clean_donations <- oba_donations[oba_donations$contb_receipt_amt >= 0,]
+oba_pos_clean_donations$colorBuckets <- as.numeric(
+  cut(
+    oba_pos_clean_donations$contb_receipt_amt, 
+    c(-10.0, 0.0, 10.0, 25.0, 50.0, 100.0, 500.0, 1000.0, 10000.)
+  )
+)
+
+oba_clean_donations_max_buckets <- oba_pos_clean_donations %>%
+  group_by(county) %>%
+  summarize(colorBucket = max(colorBuckets),
+            n = n()) %>%
+  arrange(county)
+
+oba_clean_donations_max_buckets$fips <- county.fips$fips[match(
+  paste("michigan",oba_clean_donations_max_buckets$county,sep=","),
+  county.fips$polyname
+)]
+
+
+colorsmatched <- oba_clean_donations_max_buckets$colorBucket
+
+# County Coloring
+map("county", 
+    "michigan", 
+    col = colors[colorsmatched], 
+    fill = TRUE, 
+    resolution = 0,
+    lty = 0, 
+    projection = "polyconic"
+)
+
+# County Outlines
+map("county", 
+    "michigan", 
+    col = "black", 
+    fill = FALSE, 
+    add = TRUE, 
+    lty = 1, 
+    lwd = 0.2, 
+    projection="polyconic"
+)
+
+title("Max Donation Per County: Obama")
+legend("topright", map_leg.txt, horiz = FALSE, fill = colors)
+box()
+
+```
+
+And now let's take a look at the max donations by county for Romney:
+
+```{r echo=FALSE, Bivariate_Plots-Romney}
+rom_pos_clean_donations <- rom_donations[rom_donations$contb_receipt_amt >= 0,]
+rom_pos_clean_donations$colorBuckets <- as.numeric(
+  cut(
+    rom_pos_clean_donations$contb_receipt_amt, 
+    c(-10.0, 0.0, 10.0, 25.0, 50.0, 100.0, 500.0, 1000.0, 10000.)
+  )
+)
+
+rom_clean_donations_max_buckets <- rom_pos_clean_donations %>%
+  group_by(county) %>%
+  summarize(colorBucket = max(colorBuckets),
+            n = n()) %>%
+  arrange(county)
+
+rom_clean_donations_max_buckets$fips <- county.fips$fips[match(
+  paste("michigan",rom_clean_donations_max_buckets$county,sep=","),
+  county.fips$polyname
+)]
+
+
+colorsmatched <- rom_clean_donations_max_buckets$colorBucket
+
+# County Color
+map("county", 
+    "michigan", 
+    col = colors[colorsmatched], 
+    fill = TRUE, resolution = 0,
+    lty = 0, 
+    projection = "polyconic"
+)
+
+# County Outline
+map("county", 
+    "michigan", 
+    col = "black", 
+    fill = FALSE, 
+    add = TRUE, 
+    lty = 1, 
+    lwd = 0.2,
+    projection="polyconic"
+)
+
+title("Max Donation Per County: Romney")
+legend("topright", map_leg.txt, horiz = FALSE, fill = colors)
+box()
+```
+
+For Obama's donations in the lower peninsula, it seems that his highest donations were in the urban areas, while Romney seems to have done pretty well all around.  This is somewhat surprising, as I'd have expected that the more rural counties would have lower maximum donation amounts than the urban areas.  In general, I expected the maps to have the same general pattern with just differences in color.  For example, I expected that both would have the darkest green in the urban areas, with the rural areas perhaps showing some difference between the two.  
+
+I'm curious now what would happen if we looked at the most popular (the mode) donation amount rather than the highest.  This will take a little bit of work.  First we need to group the data for each candidate by county and then the bucket it'd fall into and get a count of each bucket.  Then we need to aggregate that data.  
+
+I cheated here a little and arranged the data by county, frequency desc, bucket desc.  This resulted in the most common frequency being at the top for each county, with ties being broken by bucket (so if $50-$100 and $100-$500 both had 10 donations, we'd favor the $100-$500).  I could then aggregate the data and take the first entry for each county.
+
+```{r echo=FALSE, Bivariate_Plots-Obama_mode }
+oba_pos_clean_donations <- oba_donations[oba_donations$contb_receipt_amt >= 0, ]
+oba_pos_clean_donations$colorBuckets <- as.numeric(
+  cut(
+    oba_pos_clean_donations$contb_receipt_amt, 
+    c(-10.0, 0.0, 10.0, 25.0, 50.0, 100.0, 500.0, 1000.0, 10000.0)
+  )
+)
+
+oba_clean_donations_frequencies <- oba_pos_clean_donations %>%
+  group_by(county, colorBuckets) %>%
+  summarize(frequency = n()) %>%
+  arrange(county, desc(frequency), desc(colorBuckets))
+
+# pull the first entry per county so we only get one entry per county.
+oba_donations_mode <- aggregate(.~county, 
+                                oba_clean_donations_frequencies, 
+                                FUN=head, 1)
+
+colorsmatched <- oba_donations_mode$colorBuckets
+
+# County Colors
+map("county", 
+    "michigan", 
+    col = colors[colorsmatched], 
+    fill = TRUE, 
+    resolution = 0,
+    lty = 0, 
+    projection = "polyconic"
+)
+
+# County Outline
+map("county", 
+    "michigan", 
+    col = "black", 
+    fill = FALSE, 
+    add = TRUE, 
+    lty = 1, 
+    lwd = 0.2,
+    projection="polyconic"
+)
+
+title("Most Popular Donation Per County: Obama")
+legend("topright", map_leg.txt, horiz = FALSE, fill = colors)
+box()
+```
+
+Lots of light colors there, which means that for most of the counties in Michigan, the most frequent donation amount for Obama was pretty low.  Usually no more than $50.
+
+Now let's take a look at the donations for Romney:
+
+```{r echo=FALSE, Bivariate_Plots-rom_mode }
+rom_pos_clean_donations <- rom_donations[rom_donations$contb_receipt_amt >= 0,]
+rom_pos_clean_donations$colorBuckets <- as.numeric(
+  cut(
+    rom_pos_clean_donations$contb_receipt_amt, 
+    c(-10.0, 0.0, 10.0, 25.0, 50.0, 100.0, 500.0, 1000.0, 10000.0)
+  )
+)
+
+rom_clean_donations_frequencies <- rom_pos_clean_donations %>%
+  group_by(county, colorBuckets) %>%
+  summarize(frequency = n()) %>%
+  arrange(county, desc(frequency), desc(colorBuckets))
+
+# pull the top row for each county to get one color per county
+rom_donations_mode <- aggregate(.~county, 
+                                   rom_clean_donations_frequencies, 
+                                   FUN=head, 1)
+
+colorsmatched <- rom_donations_mode$colorBuckets
+
+# county color
+map("county", 
+    "michigan", 
+    col = colors[colorsmatched], 
+    fill = TRUE, 
+    resolution = 0,
+    lty = 0, 
+    projection = "polyconic"
+)
+
+# county outlines
+map("county", 
+    "michigan", 
+    col = "black", 
+    fill = FALSE, 
+    add = TRUE, 
+    lty = 1, 
+    lwd = 0.2,
+    projection="polyconic"
+)
+
+title("Most Popular Donation Per County: Romney")
+legend("topright", map_leg.txt, horiz = FALSE, fill = colors)
+box()
+```
+
+Wow.  Quite a change.  The most popular donation amount for Romney was more often than not more than that for Obama in that same county.  It looks like the most popular donation was somewhere between $100 and $500 for Romney vs the $25 and $50 for Obama.  
+
+
+
+# Multivariate Analysis
+
+### Talk about some of the relationships you observed in this part of the investigation. Were there features that strengthened each other in terms of looking at your feature(s) of interest?
+
+This set of graphs was quite a bit more interesting than the last set we did.  One thing that I noticed was that the higher donations for either candidate tended to be in urban areas.  The one exception for this I noticed with Obama was the Leelanau / Grand Traverse County region (Leelanau is the triangular county with water on both sides in the north-western portion of the lower peninsula of Michigan, and Grand Traverse is the county that borders it to the south-east).  These areas have some pretty expensive homes in them, so it wouldn't be surprising to see sizeable donations coming from them compared to some of the more rural areas just to the south.
+
+This contrasted with the mapping for Romney, which showed he got sizeable donations from a good majority of the counties in Michigan.  This follows with the other numbers we observed - while Romney may not have gotten as many donations as Obama, the ones he did get tended to be much larger.
+
+We can see this when we look at the most popular donation amounts -- even here Romney out-raises Obama.  In a pattern very similar to the max donations, we can see that for most counties, the most popular donation amount for Romney fell in the $100-$500 range while the most popular donation amount for Obama fell between $10 and $50 with many counties most popular donation being between $10 and $25.
+
+
+### Were there any interesting or surprising interactions between features?
+What I found somewhat surprising was how many counties Romney got sizeable donations from.  It looks like roughly 3/4 of all the counties in the state had at least one person in them that gave $1,000 or more to his campaign.  Part of me is left wondering if there was a flaw in the data or my graphing, though as much as I can tell, my graphs are accurate.  Perhaps I misjudge the disbursement of individuals either financially able or foolish enough to give away that much money in Michigan.
+
+### OPTIONAL: Did you create any models with your dataset? Discuss the strengths and limitations of your model.
+I did not create any models for this dataset, though I would be interested to see if we could model how the counties voted in that election compared to donations by candidate.
+
+------
+
+# Final Plots and Summary
+```{r echo=FALSE, FinalPlotsPreparation}
+general_elections <- presidential_donations[
+  presidential_donations$election_tp == 'G2012', ]
+```
+To close, let's take a closer look at the donations raised by Obama and Romney for the General Election.  First, let's get a general feel for the distribution of the donations.
+
+### Plot One
+```{r echo=FALSE, fig.width=10, Plot_One}
+par(mfrow = c(1, 2))
+ggplot(general_elections, aes(contb_receipt_amt, fill=cand_nm)) +
+  geom_histogram(binwidth = 100, drop = TRUE, position = "stack") +
+  scale_y_continuous(trans = 'log10',
+                     breaks = trans_breaks('log10', function(x) 10^x),
+                     labels = trans_format('log10', math_format(10^.x)),
+                     limits = c(1,100000)) +
+  scale_x_continuous(limits=c(-5001, 10100)) + 
+  ggtitle("2012 Donations For General Election - $100 Buckets")
+
+ggplot(general_elections, aes(cand_nm, contb_receipt_amt, fill=cand_nm)) +
+  geom_boxplot(outlier.colour= alpha("black", .20)) +
+  coord_flip() + 
+  scale_y_continuous(trans = 'log10',
+                        breaks = trans_breaks('log10', function(x) 10^x),
+                        labels = trans_format('log10', math_format(10^.x)),
+                        limits = c(1,10000)) + 
+  ggtitle("2012 Campaign Donations By Candidate For General Election") +
+  ylab("Donation Amount") +
+  xlab("Candidate")
+```
+### Description One
+On the left we have a stacked histogram for the Primary Election donations and on the right we have a box plot for the donations.  
+
+In general, we can see that the distribution of donation amounts, when bucketed in $100 buckets, is roughly normal for both candidates, to a point.  In the ~ -$1000 to $1000 range we have a fairly nice bell shaped distribution.  Once we go beyond that in either direction however, we see lots of gaps and lots of spikes.  We can also see that when it came to the lower donation amounts ($100 - $400), Obama got more people to donate than Romney did.  On the other hand, anything beyond $400, and Romney got more people to donate in that range than Obama did.
+
+This suggests that Obama's median is a bit lower than Romney's, and we can see this when we look at the box plot for the two.  Here we can see that Obama's Median didn't even beat Romeny's first quartile, and that Obama's 3rd quartile matches Romney's Median.  In general, much of the bulk of Romney's donations was greater than the bulk of Obama's.
+
+### Plot Two
+```{r echo=FALSE, fig.width=10, Plot_Two}
+par(mfrow = c(1, 1))
+general_max_buckets <- general_elections %>%
+  group_by(county, cand_nm) %>%
+  summarize(
+    max_donation = max(contb_receipt_amt)
+  ) %>%
+  arrange(county)
+
+# Add a column for last name to give us easy to use column names when we cast
+general_max_buckets$name[general_max_buckets$cand_nm == 'Obama, Barack'] <- "Obama"
+general_max_buckets$name[general_max_buckets$cand_nm == 'Romney, Mitt'] <- "Romney"
+
+# Bring the max_donation for Obama and Romney up to one line per county
+general_max_by_cand <- cast(
+  general_max_buckets, 
+  county~name, 
+  value = 'max_donation'
+)
+# Addume 0 if nothing
+general_max_by_cand[is.na(general_max_by_cand)] <- 0
+general_max_by_cand$difference <- general_max_by_cand$Obama - 
+  general_max_by_cand$Romney
+
+#Red for Romney, Blue for Obama, White for no one
+max_colors = c("#FF0000","#FFFFFF", "#0000FF")
+
+#Since we're doing Obama - Romney, negative values mean Romney had a higher max, postive means Obama
+general_max_by_cand$colorBucket <- as.numeric(
+  cut(
+    general_max_by_cand$difference, 
+    c(-10000.00,-1.00,1.00,10000.00)
+  )
+)
+
+colorsmatched <- general_max_by_cand$colorBucket
+max_map_leg.txt <- c("Romney","Neither","Obama")
+
+map("county", 
+    "michigan", 
+    col = max_colors[colorsmatched], 
+    fill = TRUE, resolution = 0,
+    lty = 0, 
+    projection = "polyconic"
+)
+
+map("county", 
+    "michigan", 
+    col = "black", 
+    fill = FALSE, 
+    add = TRUE, 
+    lty = 1, 
+    lwd = 0.2,
+    projection="polyconic"
+)
+title("Candidate with Highest Donation By County")
+legend("topright", max_map_leg.txt, horiz = FALSE, fill = max_colors)
+box()
+```
+
+### Description Two
+Where before we tried to get a feel for the break down of maximum donation size by county, here we just want to see who, based on maximum donation by county, "won".  To win, the candidate's maximum donation had to be more than the other's. This doesn't give an indication as to how much more they obtained from their max donation - to "win" they simply had to have a higher max donation, even if it was only by $1.00. 
+
+Here we can again see that when it comes to who obtained the highest donation by county, Romney won.  There were a few counties where the candidates tied, but even when you take those counties out of the picture, it's still very clear that Romney's maximum donations by county typically outweighed Obama's.
+
+In our next plot we'll do a similar graph only this time we'll look at the donation mode (the most popular) instead of the donation max.
+
+### Plot Three
+```{r echo=FALSE, Plot_Three}
+#copy over because we'll want to get rid of negatives
+general_elections_mode <- 
+  general_elections[general_elections$contb_receipt_amt >= 0,]
+
+#bucketize by $100 like we did in the histogram
+general_elections_mode$bucket <- as.numeric(
+  cut(
+    general_elections_mode$contb_receipt_amt,
+    c(seq(0, 10000, by=10))
+  )
+)
+
+general_elections_frequencies <- general_elections_mode %>%
+  group_by(county, cand_nm, bucket) %>%
+  summarize(frequency = n()) %>%
+  ungroup() %>%
+  arrange(county, cand_nm, desc(frequency), desc(bucket))
+
+# Add a column for last name to give us easy to use column names when we cast
+general_elections_frequencies$name[
+  general_elections_frequencies$cand_nm == 'Obama, Barack'
+] <- "Obama"
+
+general_elections_frequencies$name[
+  general_elections_frequencies$cand_nm == 'Romney, Mitt'
+] <- "Romney"
+
+#break out by candidate so we can more easily combine and melt later
+romney_frequencies <- general_elections_frequencies[
+  general_elections_frequencies$name == 'Romney',
+]
+
+romney_mode <- aggregate(.~county, romney_frequencies, FUN=head, 1)
+
+obama_frequencies <- general_elections_frequencies[
+  general_elections_frequencies$name == 'Obama',
+]
+
+obama_mode <- aggregate(.~county, obama_frequencies, FUN=head, 1)
+
+#combine our modes into one so that we can cast it for doing differences
+general_elections_mode = rbind(obama_mode, romney_mode)
+
+general_elections_mode_by_cand <- cast(general_elections_mode, 
+                                       county~name, 
+                                       value='bucket')
+
+# Cast the bucket field to numeric so we can shift all the NA to 0
+general_elections_mode_by_cand$Obama <-
+  as.numeric(as.character(general_elections_mode_by_cand$Obama))
+
+general_elections_mode_by_cand$Romney <-
+  as.numeric(as.character(general_elections_mode_by_cand$Romney))
+
+general_elections_mode_by_cand[is.na(general_elections_mode_by_cand)] <- 0
+
+general_elections_mode_by_cand$difference <- 
+  general_elections_mode_by_cand$Obama - general_elections_mode_by_cand$Romney
+
+
+#Since we're doing Obama - Romney, negative values mean Romney had a higher max, postive means Obama
+general_elections_mode_by_cand$colorBucket <- as.numeric(
+  cut(
+    general_elections_mode_by_cand$difference, 
+    c(-10000.00,-1.00,1.00,10000.00)
+  )
+)
+
+colorsmatched <- general_elections_mode_by_cand$colorBucket
+max_map_leg.txt <- c("Romney","Neither","Obama")
+
+map("county", 
+    "michigan", 
+    col = max_colors[colorsmatched], 
+    fill = TRUE, resolution = 0,
+    lty = 0, 
+    projection = "polyconic"
+)
+
+map("county", 
+    "michigan", 
+    col = "black", 
+    fill = FALSE, 
+    add = TRUE, 
+    lty = 1, 
+    lwd = 0.2,
+    projection="polyconic"
+)
+title("Candidate with Most Popular Donation By County\n$10 Buckets")
+legend("topright", max_map_leg.txt, horiz = FALSE, fill = max_colors)
+box()
+
+```
+
+### Description Three
+This is a comparison of the difference between the most popluar donation amount per county when broken down into $10 buckets.  So, if one candidate's most popular donation amount in a county was between $10 and $20, and the other's most popular was between $30 and $40, the candidate with the amount between $30 and $40 "wins" the county.
+
+Depending on the size of the buckets you choose, the graph above can look fairly different.  For example, when I set the bucket size to $100 to match the buckets we used in the histogram, I found that there were very few counties where either candidate had a higher valued most popular donation amount than the other.
+
+The decision to pick $10 for the buckets after $100 and $25 ended up with a map with barely any difference between the candidates was based on the popular donation amounts map for Obama above.  My hope was to get an amount as a bucket where we'd see at least a few counties won by each candidate at a minimum.
+
+We can still see, though, that even after picking a small bucket size, Romney "won" more counties than Obama did..  On higher granularity mappings of $25 and $100, there wasn't even a single county that Obama "won".  This is likely due to the fact that in general, the most popular amounts donated to Obama by county rarely exceeded $50 whereas for Romney, they were most frequently in the $100-$500 range. 
+
+------
+# Reflection
+In closing, let's review our exploration of the 2012 Presidential Election Donations Data.
+
+To start, we discovered that close to half of the data was of little use to us as it was either redundant or ledger style data.  Data points like donor city, donor state, memo text, memo type, file_num, transaction id, etc can't reallly tell us a great deal about the donation amount.
+
+Through looking at histograms of the donations I can see that the data included both payments and receipts.  This was indicated by negative values for donation amount instead of positive ones.  After doing some research, I found that often these negative amounts are due to people donating too much and either getting some of it back or claiming that the over payment was on behalf of another individual, often a spouse.
+
+As I continued to investigate the overall shape and distribution of the data, I took a look at some box plots.  One broken down by candidate, the other by the county of the donation.  I saw that interquartile ranges and medians for donations by candidate differed widely from candidate to candidate, but not as much from county to county.
+
+Once I got a decent feel for the layout of the data, I decided we'd take a closer look at the difference between Obama and Romeny, as they were the two primary candidates for the 2012 Presidential Election.  To start with, we compared the histograms of donations to Obama vs Romney and it was here that we started to notice that in general, Romney had fewer small donations but more large donations than Obama.  
+
+The next thing I wanted to look at was donations over time.  Our first attempt to do this did not turn out so well; by graphing average donations per day we ended up with a very ragged graph.  By graphing average monthly donation, however, we were able to get a smoother graph that showed a rough general trend of high average donations to start that eventually tapered off to lowever averages near the end.
+
+Looking further, I decided to break the donations up by the race they were for (Primary or General) and candiate (Obama or Romney) and graph those to see what might show.  It was here we saw some interesting relationships: Obama had some payments during the time frame that were associated with the 2008 Primaries, rasied very little in general for the 2012 Primaries, and Romney didn't start receiving donation for the 2012 General Election until April of 2012.  After filtering out the "Other" and 2008 Primary Election data, we are left with donations collected for the General and Primary Elections.
+
+We also looked at total donations received each month which, combined with average donation each month told an interesting story.  For the genereal election fundraising, both candidates started out with high average donations each month and then tapered down to a lower average donation amount.  Once we get closer to the general election, even though the average donation amount is still relatively small (except for Romney who began his fundraising about this time), the total donation amount is rather high.  This suggests a story each candidate first obtaining donations from those donors able to give more, before seeking out more general donations, typically  near the end of the race.
+
+Here we can see again that in just bout every way we measured and visualized, Romney out-raised Obama in donations.
+
+After we looked at donations over time, I decided to look at donations per county.  I was most interested here in the variations of the maximum donation and the most popular donation.  Again, after looking at the mappings, we can see that in both terms of maximum donation and most popular donation amount, Romney out-raised Obama in donations.
+
+This becomes more clear in our final plots where we actually color the county based on who "won" that county for that measurement.  Given that donations are used to campaign and that Michigan had just recently replaced a Democratic governor with a Republican, it's actually a little surprsing that Obama won the state in 2012.
+
+After having broken the data down as I did, however, I still felt like this data set was missing.  For one, I didn't do anything with the occupation or employer.  The reason for this was that, while browsing the data I noticed that to make any sense of these field would require significant data cleanup that, since I was learning how to do the map graphs, I didn't have the time for.  
+
+Even if I had had the time to dig into those data points, it would have been much better to have access to more information on the donor, such as their salary information and party affiliation.  In the absence of individual salary information, an average salary for their occupation in their county would have been able to answer more interesting questions like "What was the average donation amount by occupation?" or "Did more of the candidate's received donations come from lower or higher paid individuals?".  Were I to do this data analysis again I would try to clean up the occupation data and at the least, see if I couldn't find some sort of salary data for the occupation or county that the donor came from.
+
+
+
+# Sources
+Zip Code Data
+http://www.brainyzip.com/state/zip_michigan.html<br>
+http://www.zipcodestogo.com/Michigan/<br>
+
+http://stackoverflow.com/questions/4066607/reading-a-csv-file-with-repeated-row-names-in-r<br>
+http://stackoverflow.com/questions/13640188/converting-text-to-lowercase<br>
+http://stackoverflow.com/questions/27082601/ggplot2-line-chart-gives-geom-path-each-group-consist-of-only-one-observation<br>
+http://stackoverflow.com/questions/23083819/how-to-suppress-zeroes-when-using-geom-histogram-with-scale-y-log10<br>
+http://stackoverflow.com/questions/8169323/r-concatenate-two-dataframes<br>
+http://stackoverflow.com/questions/2547402/standard-library-function-in-r-for-finding-the-mode<br>
+http://stackoverflow.com/questions/19451032/r-returning-first-row-of-group<br>
+http://stackoverflow.com/questions/7793295/in-r-how-to-order-a-data-frame-by-one-descending-and-one-ascending-column<br>
+http://stackoverflow.com/questions/14255533/pretty-ticks-for-log-normal-scale-using-ggplot2-dynamic-not-manual<br>
+http://stackoverflow.com/questions/8929663/r-legend-placement-in-a-plot<br>
+http://stat.ethz.ch/R-manual/R-devel/library/base/html/substr.html<br>
+http://www.statmethods.net/advgraphs/layout.html<br>
+http://stat.ethz.ch/R-manual/R-devel/library/base/html/paste.html<br>
+http://www.molecularecologist.com/2012/09/making-maps-with-r/<br>
+http://cran.r-project.org/web/packages/maps/index.html<br>
+http://cran.r-project.org/web/packages/mapdata/index.html<br>
+http://www.inside-r.org/packages/cran/maps/docs/map<br>
+http://blog.revolutionanalytics.com/2009/11/choropleth-challenge-result.html<br>
+http://www.statmethods.net/input/dates.html<br>
+http://www.fec.gov/pdf/candgui.pdf<br>
+http://yihui.name/knitr/demo/graphics/<br>
